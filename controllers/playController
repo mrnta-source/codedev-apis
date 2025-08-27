@@ -6,7 +6,20 @@ const logger = require('../utils/logger');
 // Stream video
 const streamVideo = async (req, res) => {
   try {
-    const video = await Video.findById(req.params.id);
+    const { id } = req.params;
+
+    if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid video ID format' 
+      });
+    }
+
+    const video = await Video.findOne({ 
+      _id: id, 
+      isActive: true, 
+      isPublic: true 
+    });
     
     if (!video) {
       return res.status(404).json({ 
@@ -18,9 +31,10 @@ const streamVideo = async (req, res) => {
     const videoPath = path.resolve(video.videoUrl);
     
     if (!fs.existsSync(videoPath)) {
+      logger.error(`Video file not found: ${videoPath}`);
       return res.status(404).json({ 
         success: false, 
-        message: 'Video file not found' 
+        message: 'Video file not found on server' 
       });
     }
 
@@ -28,52 +42,80 @@ const streamVideo = async (req, res) => {
     const fileSize = stat.size;
     const range = req.headers.range;
 
+    // Set appropriate headers
+    res.set({
+      'Accept-Ranges': 'bytes',
+      'Content-Type': 'video/mp4',
+      'Cache-Control': 'public, max-age=3600'
+    });
+
     if (range) {
       // Handle range requests for video streaming
       const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = (end - start) + 1;
       
+      if (start >= fileSize) {
+        res.status(416).set({
+          'Content-Range': `bytes */${fileSize}`
+        });
+        return res.end();
+      }
+
+      const chunksize = (end - start) + 1;
       const file = fs.createReadStream(videoPath, { start, end });
       
-      const head = {
+      res.status(206).set({
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': 'video/mp4',
-      };
+        'Content-Length': chunksize
+      });
       
-      res.writeHead(206, head);
       file.pipe(res);
     } else {
       // Send entire file
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': 'video/mp4',
-      };
+      res.set({
+        'Content-Length': fileSize
+      });
       
-      res.writeHead(200, head);
       fs.createReadStream(videoPath).pipe(res);
     }
 
-    // Update play count (don't await to avoid blocking response)
-    Video.findByIdAndUpdate(req.params.id, { 
+    // Update play count asynchronously
+    Video.findByIdAndUpdate(id, { 
       $inc: { plays: 1 } 
     }).catch(err => logger.error('Error updating play count:', err));
 
+    logger.info(`Video streamed: ${id} from ${req.ip}`);
+
   } catch (error) {
     logger.error('Stream video error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to stream video',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
 // Get video metadata for player
 const getVideoMetadata = async (req, res) => {
   try {
-    const video = await Video.findById(req.params.id)
-      .select('title description duration thumbnailUrl views plays')
-      .populate('uploadedBy', 'username');
+    const { id } = req.params;
+
+    if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid video ID format' 
+      });
+    }
+
+    const video = await Video.findOne({ 
+      _id: id, 
+      isActive: true, 
+      isPublic: true 
+    })
+    .select('title description duration thumbnailUrl views plays likes dislikes category tags createdAt')
+    .populate('uploadedBy', 'username');
 
     if (!video) {
       return res.status(404).json({ 
@@ -82,35 +124,62 @@ const getVideoMetadata = async (req, res) => {
       });
     }
 
-    res.json({ success: true, data: video });
+    res.json({ 
+      success: true, 
+      data: video 
+    });
   } catch (error) {
     logger.error('Get video metadata error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to retrieve video metadata',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
 // Update video progress (for resume functionality)
 const updateProgress = async (req, res) => {
   try {
-    const { progress } = req.body;
+    const { progress, duration } = req.body;
     const videoId = req.params.id;
-    const userId = req.user.id;
+    const userId = req.user._id;
 
-    // Here you could implement user progress tracking
+    if (typeof progress !== 'number' || progress < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid progress value'
+      });
+    }
+
+    // Here you could implement user progress tracking in a separate collection
     // For now, just return success
+    logger.info(`Progress updated for video ${videoId} by user ${userId}: ${progress}%`);
+    
     res.json({ 
       success: true, 
-      message: 'Progress updated',
-      data: { videoId, userId, progress }
+      message: 'Progress updated successfully',
+      data: { 
+        videoId, 
+        userId, 
+        progress,
+        timestamp: new Date()
+      }
     });
   } catch (error) {
     logger.error('Update progress error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update progress',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
 module.exports = {
   streamVideo,
   getVideoMetadata,
+  updateProgress
+};
   updateProgress
 };
