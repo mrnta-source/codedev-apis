@@ -1,0 +1,116 @@
+const Video = require('../models/Video');
+const fs = require('fs');
+const path = require('path');
+const logger = require('../utils/logger');
+
+// Stream video
+const streamVideo = async (req, res) => {
+  try {
+    const video = await Video.findById(req.params.id);
+    
+    if (!video) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Video not found' 
+      });
+    }
+
+    const videoPath = path.resolve(video.videoUrl);
+    
+    if (!fs.existsSync(videoPath)) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Video file not found' 
+      });
+    }
+
+    const stat = fs.statSync(videoPath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+
+    if (range) {
+      // Handle range requests for video streaming
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = (end - start) + 1;
+      
+      const file = fs.createReadStream(videoPath, { start, end });
+      
+      const head = {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': 'video/mp4',
+      };
+      
+      res.writeHead(206, head);
+      file.pipe(res);
+    } else {
+      // Send entire file
+      const head = {
+        'Content-Length': fileSize,
+        'Content-Type': 'video/mp4',
+      };
+      
+      res.writeHead(200, head);
+      fs.createReadStream(videoPath).pipe(res);
+    }
+
+    // Update play count (don't await to avoid blocking response)
+    Video.findByIdAndUpdate(req.params.id, { 
+      $inc: { plays: 1 } 
+    }).catch(err => logger.error('Error updating play count:', err));
+
+  } catch (error) {
+    logger.error('Stream video error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// Get video metadata for player
+const getVideoMetadata = async (req, res) => {
+  try {
+    const video = await Video.findById(req.params.id)
+      .select('title description duration thumbnailUrl views plays')
+      .populate('uploadedBy', 'username');
+
+    if (!video) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Video not found' 
+      });
+    }
+
+    res.json({ success: true, data: video });
+  } catch (error) {
+    logger.error('Get video metadata error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// Update video progress (for resume functionality)
+const updateProgress = async (req, res) => {
+  try {
+    const { progress } = req.body;
+    const videoId = req.params.id;
+    const userId = req.user.id;
+
+    // Here you could implement user progress tracking
+    // For now, just return success
+    res.json({ 
+      success: true, 
+      message: 'Progress updated',
+      data: { videoId, userId, progress }
+    });
+  } catch (error) {
+    logger.error('Update progress error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+module.exports = {
+  streamVideo,
+  getVideoMetadata,
+  updateProgress
+};
