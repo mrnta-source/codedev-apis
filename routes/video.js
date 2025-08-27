@@ -8,11 +8,17 @@ const {
   getVideoById,
   uploadVideo,
   updateVideo,
-  deleteVideo
+  deleteVideo,
+  getUserVideos
 } = require('../controllers/videoController');
 
 const { authenticate } = require('../middleware/auth');
 const { validateVideo, validateVideoUpdate } = require('../middleware/validation');
+const { ensureDirectoryExists } = require('../utils/helpers');
+
+// Ensure upload directories exist
+ensureDirectoryExists('./uploads/videos');
+ensureDirectoryExists('./uploads/thumbnails');
 
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
@@ -49,7 +55,8 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 100 * 1024 * 1024 // 100MB limit
+    fileSize: 100 * 1024 * 1024, // 100MB limit
+    files: 2 // max 2 files (video + thumbnail)
   }
 });
 
@@ -58,6 +65,8 @@ router.get('/', getAllVideos);
 router.get('/:id', getVideoById);
 
 // Protected routes
+router.get('/user/my-videos', authenticate, getUserVideos);
+
 router.post('/', 
   authenticate, 
   upload.fields([
